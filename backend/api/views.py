@@ -1,6 +1,6 @@
 from django.contrib.gis.geos import Point
 from django.utils import timezone
-from django.db.models import Count, Q
+from django.db.models import Count, Max, Q
 from django.db.models.functions import TruncDate
 from rest_framework import viewsets, permissions, filters, status
 from rest_framework.decorators import action
@@ -243,5 +243,168 @@ class DashboardAdminViewSet(viewsets.ViewSet):
             .values('dia')\
             .annotate(cantidad=Count('id'))\
             .order_by('dia')
-            
-        return Response(data)
+
+        return Response([
+            {'fecha': str(item['dia']), 'total': item['cantidad']}
+            for item in data
+        ])
+
+    @action(detail=False, methods=['get'])
+    def tasa_resolucion(self, request):
+        """Tasa de resolución global y por tipo de problema"""
+        total = Reporte.objects.count()
+        resueltos = Reporte.objects.filter(status=Reporte.STATUS_RESUELTO).count()
+
+        por_tipo = (
+            Reporte.objects
+            .values('tipo_problema')
+            .annotate(
+                total=Count('id'),
+                resueltos=Count('id', filter=Q(status=Reporte.STATUS_RESUELTO)),
+            )
+            .order_by('-total')
+        )
+
+        tipos = dict(Reporte.OPCIONES_TIPO)
+        detalle = [
+            {
+                'tipo': item['tipo_problema'],
+                'tipo_texto': tipos.get(item['tipo_problema'], item['tipo_problema']),
+                'total': item['total'],
+                'resueltos': item['resueltos'],
+                'tasa_pct': round(item['resueltos'] / item['total'] * 100, 1) if item['total'] else 0,
+            }
+            for item in por_tipo
+        ]
+
+        tasa_global = round(resueltos / total * 100, 1) if total else 0
+        return Response({
+            'global': {'total': total, 'resueltos': resueltos, 'tasa_pct': tasa_global},
+            'por_tipo': detalle,
+        })
+
+    @action(detail=False, methods=['get'])
+    def tiempo_resolucion(self, request):
+        """Tiempo promedio de resolución por tipo de problema (en horas)"""
+        resultado = []
+        for tipo_key, tipo_label in Reporte.OPCIONES_TIPO:
+            fechas = list(
+                Reporte.objects
+                .filter(status=Reporte.STATUS_RESUELTO, tipo_problema=tipo_key)
+                .values_list('fecha_hora', 'fecha_actualizacion')
+            )
+            if not fechas:
+                continue
+            total_horas = sum((f[1] - f[0]).total_seconds() for f in fechas) / 3600
+            resultado.append({
+                'tipo': tipo_key,
+                'tipo_texto': tipo_label,
+                'promedio_horas': round(total_horas / len(fechas), 1),
+                'total_resueltos': len(fechas),
+            })
+        return Response(resultado)
+
+    @action(detail=False, methods=['get'])
+    def zonas_calor(self, request):
+        """Concentración de reportes por colonia y coordenadas para heatmap"""
+        por_colonia = list(
+            Reporte.objects
+            .exclude(usuario__isnull=True)
+            .exclude(usuario__perfil__colonia='')
+            .values('usuario__perfil__colonia')
+            .annotate(
+                total=Count('id'),
+                pendientes=Count('id', filter=Q(status=Reporte.STATUS_PENDIENTE)),
+                resueltos=Count('id', filter=Q(status=Reporte.STATUS_RESUELTO)),
+            )
+            .order_by('-total')[:20]
+        )
+
+        puntos = [
+            {
+                'lat': r.ubicacion.y,
+                'lon': r.ubicacion.x,
+                'tipo': r.tipo_problema,
+                'peso': max(1, r.prioridad // 10 + 1),
+            }
+            for r in Reporte.objects
+            .exclude(status=Reporte.STATUS_CANCELADO)
+            .exclude(ubicacion__isnull=True)
+            .only('ubicacion', 'tipo_problema', 'prioridad')
+        ]
+
+        return Response({
+            'por_colonia': [
+                {
+                    'colonia': item['usuario__perfil__colonia'],
+                    'total': item['total'],
+                    'pendientes': item['pendientes'],
+                    'resueltos': item['resueltos'],
+                }
+                for item in por_colonia
+            ],
+            'puntos_mapa': puntos,
+        })
+
+    @action(detail=False, methods=['get'])
+    def eficiencia_pipas(self, request):
+        """Servicios completados y tasa de eficiencia por unidad (pipa)"""
+        pipas = Pipa.objects.annotate(
+            servicios_totales=Count('servicios'),
+            servicios_resueltos=Count('servicios', filter=Q(servicios__status=Reporte.STATUS_RESUELTO)),
+            servicios_activos=Count(
+                'servicios',
+                filter=Q(servicios__status__in=[Reporte.STATUS_ASIGNADO, Reporte.STATUS_PROCESO]),
+            ),
+        )
+
+        resultado = []
+        for pipa in pipas:
+            eficiencia = (
+                round(pipa.servicios_resueltos / pipa.servicios_totales * 100, 1)
+                if pipa.servicios_totales else 0
+            )
+            resultado.append({
+                'id': pipa.id,
+                'numero_economico': pipa.numero_economico,
+                'chofer': pipa.chofer,
+                'estado': pipa.estado,
+                'servicios_totales': pipa.servicios_totales,
+                'servicios_resueltos': pipa.servicios_resueltos,
+                'servicios_activos': pipa.servicios_activos,
+                'eficiencia_pct': eficiencia,
+            })
+
+        resultado.sort(key=lambda x: x['servicios_resueltos'], reverse=True)
+        return Response(resultado)
+
+    @action(detail=False, methods=['get'])
+    def reportes_recurrentes(self, request):
+        """Zonas donde el mismo tipo de problema se ha reportado 2 o más veces"""
+        recurrentes = (
+            Reporte.objects
+            .exclude(usuario__isnull=True)
+            .exclude(usuario__perfil__colonia='')
+            .values('tipo_problema', 'usuario__perfil__colonia')
+            .annotate(
+                cantidad=Count('id'),
+                ultimo=Max('fecha_hora'),
+                resueltos=Count('id', filter=Q(status=Reporte.STATUS_RESUELTO)),
+            )
+            .filter(cantidad__gte=2)
+            .order_by('-cantidad')
+        )
+
+        tipos = dict(Reporte.OPCIONES_TIPO)
+        return Response([
+            {
+                'colonia': item['usuario__perfil__colonia'],
+                'tipo': item['tipo_problema'],
+                'tipo_texto': tipos.get(item['tipo_problema'], item['tipo_problema']),
+                'cantidad': item['cantidad'],
+                'resueltos': item['resueltos'],
+                'sin_resolver': item['cantidad'] - item['resueltos'],
+                'ultimo_reporte': item['ultimo'],
+            }
+            for item in recurrentes
+        ])

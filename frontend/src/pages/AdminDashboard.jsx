@@ -32,8 +32,9 @@ export default function AdminDashboard() {
   const [dashboardData, setDashboardData] = useState(null)
   const [grafica, setGrafica] = useState([])
   const [listaReportes, setListaReportes] = useState([]) 
-  const [listaPipas, setListaPipas] = useState([])       
-  
+  const [listaPipas, setListaPipas] = useState([])
+  const [metricas, setMetricas] = useState({})
+
   const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
   
@@ -51,17 +52,39 @@ export default function AdminDashboard() {
       const [resKpi, resGraf, resRep, resPipas] = await Promise.all([
         servicios.admin.getEstadisticas(),
         servicios.admin.getGraficaSemanal(),
-        servicios.reportes.getAll(), 
-        servicios.pipas.getAll()     
+        servicios.reportes.getAll(),
+        servicios.pipas.getAll()
       ])
       setDashboardData(resKpi.data)
       setGrafica(resGraf.data)
-      setListaReportes(resRep.data)
-      setListaPipas(resPipas.data)
+      const repData = resRep.data
+      setListaReportes(Array.isArray(repData) ? repData : (repData?.results ?? []))
+      const pipaData = resPipas.data
+      setListaPipas(Array.isArray(pipaData) ? pipaData : (pipaData?.results ?? []))
     } catch (error) {
       toast.error("Error cargando panel")
     } finally {
       setLoading(false)
+    }
+
+    // Métricas avanzadas — se cargan en segundo plano sin bloquear el panel
+    try {
+      const [resTasa, resTiempos, resZonas, resPipasEf, resRecurrentes] = await Promise.all([
+        servicios.admin.getTasaResolucion(),
+        servicios.admin.getTiempoResolucion(),
+        servicios.admin.getZonasCalor(),
+        servicios.admin.getEficienciaPipas(),
+        servicios.admin.getReportesRecurrentes()
+      ])
+      setMetricas({
+        tasa: resTasa.data,
+        tiempos: resTiempos.data,
+        zonas: resZonas.data,
+        pipas: resPipasEf.data,
+        recurrentes: resRecurrentes.data
+      })
+    } catch {
+      // Métricas avanzadas no disponibles — no rompe el panel principal
     }
   }
 
@@ -110,7 +133,6 @@ export default function AdminDashboard() {
   }
 
   const stats = dashboardData.kpis
-  const topProblema = dashboardData.moda_problema
 
   return (
     <Box minH="100vh" bg="gray.50" p={8}>
@@ -129,8 +151,8 @@ export default function AdminDashboard() {
       <SimpleGrid columns={{ base: 1, md: 4 }} spacing={5} mb={8}>
         <StatCard title="Total Expedientes" stat={stats.total_historico} icon="📂" />
         <StatCard title="Pendientes" stat={stats.pendientes_urgentes} icon="🚨" color="red.500" />
-        <StatCard title="Concluidos" stat={stats.resueltos} icon="✅" color="green.500" />
-        <StatCard title="Falla Recurrente" stat={topProblema.tipo} icon="⚠️" />
+        <StatCard title="Concluidos" stat={stats.concluidos_exitosos} icon="✅" color="green.500" />
+        <StatCard title="Falla Recurrente" stat={stats.falla_recurrente} icon="⚠️" />
       </SimpleGrid>
 
       <Tabs variant="enclosed" colorScheme="blue" bg="white" borderRadius="lg" boxShadow="sm">
@@ -139,6 +161,7 @@ export default function AdminDashboard() {
             <Tab fontWeight="bold">📋 Lista de Solicitudes</Tab>
             <Tab fontWeight="bold">🚚 Parque Vehicular</Tab>
             <Tab fontWeight="bold">📊 Estadísticas</Tab>
+            <Tab fontWeight="bold">📈 Métricas Avanzadas</Tab>
         </TabList>
 
         <TabPanels>
@@ -220,6 +243,146 @@ export default function AdminDashboard() {
                     <BarChart data={grafica}><XAxis dataKey="fecha" /><YAxis /><Tooltip /><Bar dataKey="total" fill="#691C32" /></BarChart>
                     </ResponsiveContainer>
                 </Box>
+            </TabPanel>
+
+            {/* ── MÉTRICAS AVANZADAS ─────────────────────────────────── */}
+            <TabPanel>
+              {/* 1. Tasa de Resolución */}
+              <Box mb={8}>
+                <Heading size="sm" mb={3} color="#691C32">Tasa de Resolución</Heading>
+                <SimpleGrid columns={3} spacing={4} mb={4}>
+                  <Box bg="gray.50" p={4} borderRadius="md" textAlign="center">
+                    <Text fontSize="2xl" fontWeight="bold">{metricas.tasa?.global?.total ?? '—'}</Text>
+                    <Text fontSize="sm" color="gray.500">Total expedientes</Text>
+                  </Box>
+                  <Box bg="green.50" p={4} borderRadius="md" textAlign="center">
+                    <Text fontSize="2xl" fontWeight="bold" color="green.600">{metricas.tasa?.global?.resueltos ?? '—'}</Text>
+                    <Text fontSize="sm" color="gray.500">Resueltos</Text>
+                  </Box>
+                  <Box bg="blue.50" p={4} borderRadius="md" textAlign="center">
+                    <Text fontSize="2xl" fontWeight="bold" color="blue.600">{metricas.tasa?.global?.tasa_pct ?? '—'}%</Text>
+                    <Text fontSize="sm" color="gray.500">Tasa global</Text>
+                  </Box>
+                </SimpleGrid>
+                <Box overflowX="auto">
+                  <Table variant="simple" size="sm">
+                    <Thead bg="gray.50">
+                      <Tr><Th>Tipo de Problema</Th><Th isNumeric>Total</Th><Th isNumeric>Resueltos</Th><Th isNumeric>Tasa</Th></Tr>
+                    </Thead>
+                    <Tbody>
+                      {metricas.tasa?.por_tipo?.map((item, i) => (
+                        <Tr key={i}>
+                          <Td>{item.tipo_texto}</Td>
+                          <Td isNumeric>{item.total}</Td>
+                          <Td isNumeric>{item.resueltos}</Td>
+                          <Td isNumeric>
+                            <Badge colorScheme={item.tasa_pct >= 50 ? 'green' : 'orange'}>{item.tasa_pct}%</Badge>
+                          </Td>
+                        </Tr>
+                      ))}
+                    </Tbody>
+                  </Table>
+                </Box>
+              </Box>
+
+              {/* 2. Tiempo Promedio de Resolución */}
+              <Box mb={8}>
+                <Heading size="sm" mb={3} color="#691C32">Tiempo Promedio de Resolución (horas)</Heading>
+                {metricas.tiempos?.length > 0 ? (
+                  <Box h="220px">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={metricas.tiempos}>
+                        <XAxis dataKey="tipo_texto" tick={{ fontSize: 11 }} />
+                        <YAxis unit="h" />
+                        <Tooltip formatter={(v) => [`${v}h`, 'Promedio']} />
+                        <Bar dataKey="promedio_horas" fill="#0B231E" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </Box>
+                ) : (
+                  <Text color="gray.400" fontSize="sm">Sin reportes resueltos registrados aún.</Text>
+                )}
+              </Box>
+
+              {/* 3. Zonas de Calor */}
+              <Box mb={8}>
+                <Heading size="sm" mb={3} color="#691C32">Colonias con Mayor Concentración de Reportes</Heading>
+                <Box overflowX="auto">
+                  <Table variant="simple" size="sm">
+                    <Thead bg="gray.50">
+                      <Tr><Th>Colonia</Th><Th isNumeric>Total</Th><Th isNumeric>Pendientes</Th><Th isNumeric>Resueltos</Th></Tr>
+                    </Thead>
+                    <Tbody>
+                      {metricas.zonas?.por_colonia?.map((z, i) => (
+                        <Tr key={i} bg={i < 3 ? 'red.50' : undefined}>
+                          <Td fontWeight={i < 3 ? 'bold' : 'normal'}>{i < 3 ? '🔴 ' : ''}{z.colonia}</Td>
+                          <Td isNumeric>{z.total}</Td>
+                          <Td isNumeric><Badge colorScheme="red">{z.pendientes}</Badge></Td>
+                          <Td isNumeric><Badge colorScheme="green">{z.resueltos}</Badge></Td>
+                        </Tr>
+                      ))}
+                    </Tbody>
+                  </Table>
+                </Box>
+              </Box>
+
+              {/* 4. Eficiencia por Pipa */}
+              <Box mb={8}>
+                <Heading size="sm" mb={3} color="#691C32">Eficiencia por Unidad (Pipa)</Heading>
+                <Box overflowX="auto">
+                  <Table variant="simple" size="sm">
+                    <Thead bg="gray.50">
+                      <Tr><Th>Unidad</Th><Th>Chofer</Th><Th isNumeric>Servicios</Th><Th isNumeric>Completados</Th><Th isNumeric>Activos</Th><Th isNumeric>Eficiencia</Th></Tr>
+                    </Thead>
+                    <Tbody>
+                      {metricas.pipas?.map((p, i) => (
+                        <Tr key={i}>
+                          <Td fontWeight="bold">{p.numero_economico}</Td>
+                          <Td>{p.chofer || '—'}</Td>
+                          <Td isNumeric>{p.servicios_totales}</Td>
+                          <Td isNumeric>{p.servicios_resueltos}</Td>
+                          <Td isNumeric>{p.servicios_activos}</Td>
+                          <Td isNumeric>
+                            <Badge colorScheme={p.eficiencia_pct >= 70 ? 'green' : p.eficiencia_pct >= 40 ? 'yellow' : 'gray'}>
+                              {p.eficiencia_pct}%
+                            </Badge>
+                          </Td>
+                        </Tr>
+                      ))}
+                    </Tbody>
+                  </Table>
+                </Box>
+              </Box>
+
+              {/* 5. Reportes Recurrentes */}
+              <Box>
+                <Heading size="sm" mb={3} color="#691C32">Zonas con Problemas Recurrentes</Heading>
+                <Box overflowX="auto">
+                  <Table variant="simple" size="sm">
+                    <Thead bg="gray.50">
+                      <Tr><Th>Colonia</Th><Th>Tipo de Problema</Th><Th isNumeric>Recurrencias</Th><Th isNumeric>Sin Resolver</Th></Tr>
+                    </Thead>
+                    <Tbody>
+                      {metricas.recurrentes?.length > 0 ? metricas.recurrentes.map((r, i) => (
+                        <Tr key={i} bg={r.sin_resolver > 0 ? 'orange.50' : undefined}>
+                          <Td>{r.colonia}</Td>
+                          <Td>{r.tipo_texto}</Td>
+                          <Td isNumeric><Badge colorScheme="purple">{r.cantidad}</Badge></Td>
+                          <Td isNumeric>
+                            <Badge colorScheme={r.sin_resolver > 0 ? 'red' : 'green'}>{r.sin_resolver}</Badge>
+                          </Td>
+                        </Tr>
+                      )) : (
+                        <Tr>
+                          <Td colSpan={4} textAlign="center" color="gray.400" fontSize="sm">
+                            Sin zonas recurrentes detectadas.
+                          </Td>
+                        </Tr>
+                      )}
+                    </Tbody>
+                  </Table>
+                </Box>
+              </Box>
             </TabPanel>
         </TabPanels>
       </Tabs>

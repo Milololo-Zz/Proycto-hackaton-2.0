@@ -57,9 +57,12 @@ export default function VentanillaUnica() {
         servicios.publico.getNoticias()
       ])
       setUser(perfilRes.data)
-      setMisSolicitudes(misRepRes.data)
-      setPuntosMapa(todoRepRes.data)
-      setNoticias(noticiasRes.data || [])
+      const misData = misRepRes.data
+      setMisSolicitudes(Array.isArray(misData) ? misData : (misData?.results ?? []))
+      const mapaData = todoRepRes.data
+      setPuntosMapa(Array.isArray(mapaData) ? mapaData : (mapaData?.results ?? []))
+      const notData = noticiasRes.data
+      setNoticias(Array.isArray(notData) ? notData : (notData?.results ?? []))
     } catch (error) {
       console.error(error)
     } finally {
