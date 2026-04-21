@@ -95,7 +95,8 @@ export default function VentanillaUnica() {
     data.append('descripcion', formData.desc)
     data.append('tipo_problema', formData.tipo)
     data.append('direccion_texto', formData.direccion)
-    data.append('ubicacion', `POINT(${coords.lng} ${coords.lat})`)
+    data.append('latitud', coords.lat)
+    data.append('longitud', coords.lng)
     if (formData.foto) data.append('foto', formData.foto)
 
     try {
